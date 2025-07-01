@@ -80,7 +80,7 @@ public class JavaViewerGui extends SimpleGui {
             if (slot >= 45)
                 break;
 
-            GuiElementBuilder element = new GuiElementBuilder(record.getIconOrHead(player.server))
+            GuiElementBuilder element = new GuiElementBuilder(record.getIconOrHead(player.getServer()))
                     .setName(record.getWaystoneText().copy().formatted(Formatting.YELLOW));
 
             if(element.asStack().isEmpty() || element.asStack().isOf(Items.AIR)) {
@@ -139,7 +139,7 @@ public class JavaViewerGui extends SimpleGui {
 
             // Setting menus
             this.setSlot(51,
-                    new GuiElementBuilder(waystone.getIconOrHead(player.server))
+                    new GuiElementBuilder(waystone.getIconOrHead(player.getServer()))
                             .setName(Text.translatable("gui.sswaystones.change_icon").formatted(Formatting.YELLOW))
                             .glow().setCallback((index, type, action, gui) -> new IconGui(waystone, player).open()));
 
@@ -215,8 +215,6 @@ public class JavaViewerGui extends SimpleGui {
                 this.setSlot(i, new GuiElementBuilder(Items.GRAY_STAINED_GLASS_PANE).setName(
                         Text.translatable("gui.sswaystones.change_icon_instruction").formatted(Formatting.GRAY)));
             }
-            this.setSlot(4, waystone.getIconOrHead(player.server));
-
             this.setSlot(7, new GuiElementBuilder(Items.PLAYER_HEAD)
                     .setSkullOwner(IconConstants.CANCEL)
                     .setName(Text.translatable("gui.sswaystones.reset").formatted(Formatting.RED))
@@ -225,6 +223,8 @@ public class JavaViewerGui extends SimpleGui {
                         this.close();
                         ViewerUtil.openJavaGui(player, waystone);
                     }));
+          
+            this.setSlot(4, waystone.getIconOrHead(player.getServer()));
         }
 
         @Override
