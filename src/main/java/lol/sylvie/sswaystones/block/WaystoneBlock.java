@@ -6,6 +6,7 @@ package lol.sylvie.sswaystones.block;
 
 import com.mojang.serialization.MapCodec;
 import eu.pb4.polymer.core.api.block.PolymerBlock;
+import lol.sylvie.sswaystones.enums.Visibility;
 import lol.sylvie.sswaystones.gui.ViewerUtil;
 import lol.sylvie.sswaystones.storage.PlayerData;
 import lol.sylvie.sswaystones.storage.WaystoneRecord;
@@ -85,7 +86,9 @@ public class WaystoneBlock extends BlockWithEntity implements PolymerBlock {
             return;
         if (!(placer instanceof ServerPlayerEntity player))
             return;
+
         createWaystone(pos, world, player);
+        //world.getServer().save(true, false, true);
     }
 
     public static void onRemoved(World world, BlockPos pos) {
@@ -105,8 +108,10 @@ public class WaystoneBlock extends BlockWithEntity implements PolymerBlock {
 
     @Override
     public BlockState onBreak(World world, BlockPos pos, BlockState state, PlayerEntity player) {
-        if (!world.isClient())
+        if (!world.isClient()){
             onRemoved(world, pos);
+            //world.getServer().save(true, false, true);
+        }
         return super.onBreak(world, pos, state, player);
     }
 
@@ -139,7 +144,7 @@ public class WaystoneBlock extends BlockWithEntity implements PolymerBlock {
                 record = newWaystone;
             }
 
-            if (!playerData.discoveredWaystones.contains(waystoneHash)) {
+            if (!playerData.discoveredWaystones.contains(waystoneHash) && record.getAccessSettings().getVisibility() == Visibility.DISCOVERABLE) {
                 playerData.discoveredWaystones.add(waystoneHash);
                 player.sendMessage(Text
                         .translatable("message.sswaystones.discovered",

@@ -7,15 +7,16 @@ package lol.sylvie.sswaystones.storage;
 import com.mojang.authlib.GameProfile;
 import com.mojang.authlib.minecraft.MinecraftProfileTextures;
 import com.mojang.authlib.yggdrasil.ProfileResult;
+import com.mojang.datafixers.util.Either;
 import com.mojang.serialization.Codec;
 import com.mojang.serialization.codecs.RecordCodecBuilder;
-import java.util.List;
-import java.util.Optional;
-import java.util.Set;
-import java.util.UUID;
+
+import java.util.*;
+
 import lol.sylvie.sswaystones.Waystones;
 import lol.sylvie.sswaystones.block.WaystoneBlock;
 import lol.sylvie.sswaystones.config.Configuration;
+import lol.sylvie.sswaystones.enums.Visibility;
 import lol.sylvie.sswaystones.util.HashUtil;
 import me.lucko.fabric.api.permissions.v0.Permissions;
 import net.minecraft.block.BlockState;
@@ -51,7 +52,7 @@ public final class WaystoneRecord {
     private final BlockPos pos; // Must be final as the hash is calculated based on pos and world
     private final RegistryKey<World> world;
     private final AccessSettings accessSettings;
-    private Item icon;
+    private ItemStack icon;
 
     public static final Codec<WaystoneRecord> CODEC = RecordCodecBuilder.create(instance -> instance.group(
             Uuids.CODEC.fieldOf("waystone_owner").forGetter(WaystoneRecord::getOwnerUUID),
@@ -61,27 +62,35 @@ public final class WaystoneRecord {
             World.CODEC.fieldOf("world").forGetter(WaystoneRecord::getWorldKey),
             AccessSettings.CODEC.optionalFieldOf("access_settings")
                     .forGetter((i) -> Optional.of(i.getAccessSettings())),
-            Registries.ITEM.getCodec().optionalFieldOf("icon", Items.PLAYER_HEAD).forGetter(WaystoneRecord::getIcon))
-            .apply(instance, WaystoneRecord::new));
+            Codec.either(Registries.ITEM.getCodec(), ItemStack.CODEC)
+                            .xmap(either -> either.map(
+                                            item -> new ItemStack(item),
+                                            itemStack -> itemStack
+                                    ),
+                                    stack -> Either.right(stack))
+                            .optionalFieldOf("icon", Items.PLAYER_HEAD.getDefaultStack())
+                            .forGetter(WaystoneRecord::getIcon))
+                .apply(instance, WaystoneRecord::new));
+
 
     // Optional fields share the same instance of a default value, so we have to use
     // this weird workaround
     @SuppressWarnings("OptionalUsedAsFieldOrParameterType")
     private WaystoneRecord(UUID owner, String ownerName, String waystoneName, BlockPos pos, RegistryKey<World> world,
-            Optional<AccessSettings> accessSettings, Item icon) {
+                           Optional<AccessSettings> accessSettings, ItemStack icon) {
         this(owner, ownerName, waystoneName, pos, world,
-                accessSettings.orElseGet(() -> new AccessSettings(false, false, "")), icon);
+                accessSettings.orElseGet(() -> new AccessSettings(Visibility.DISCOVERABLE, false, "", new ArrayList<UUID>())), icon);
     }
 
     public WaystoneRecord(UUID owner, String ownerName, String waystoneName, BlockPos pos, RegistryKey<World> world,
-            AccessSettings accessSettings, Item icon) {
+                          AccessSettings accessSettings, ItemStack icon) {
         this.owner = owner;
         this.ownerName = ownerName;
         this.setWaystoneName(waystoneName); // Limits waystone name
         this.pos = pos;
         this.world = world;
         this.accessSettings = accessSettings;
-        this.icon = icon == null ? Items.PLAYER_HEAD : icon;
+        this.icon = icon == null ? Items.PLAYER_HEAD.getDefaultStack() : icon;
     }
 
     public void handleTeleport(ServerPlayerEntity player) {
@@ -188,8 +197,15 @@ public final class WaystoneRecord {
     }
 
     public ItemStack getIconOrHead(@Nullable MinecraftServer server) {
-        if (icon != null && icon != Items.PLAYER_HEAD)
-            return icon.getDefaultStack();
+        if(icon == null || icon.isEmpty() || icon.getItem() == Items.AIR) {
+            return createPlayerHead(this.getOwnerUUID(), this.getOwnerName());
+        }
+
+        if(icon.getCount() <= 0 || icon.getCount() > 99)
+            icon.setCount(1);
+
+        if (icon != Items.PLAYER_HEAD.getDefaultStack())
+            return icon;
 
         // The server has to fetch the player's skin
         GameProfile profile = new GameProfile(this.getOwnerUUID(), this.getOwnerName());
@@ -239,40 +255,74 @@ public final class WaystoneRecord {
         return accessSettings;
     }
 
-    public Item getIcon() {
+    public ItemStack getIcon() {
+        if(icon.getCount() <= 0 || icon.getCount() > 99)
+            icon.setCount(1);
+
         return icon;
     }
 
-    public void setIcon(Item icon) {
-        this.icon = icon;
+    public void setIcon(ItemStack icon) {
+        // Null check
+        if (icon == null) {
+            this.icon = Items.PLAYER_HEAD.getDefaultStack();
+            return;
+        }
+
+        ItemStack iconCopy = icon.copy();
+        if (iconCopy.getCount() <= 0 || iconCopy.getCount() > 99)
+            iconCopy.setCount(1);
+
+        if (iconCopy.getItem() == Items.AIR || iconCopy.isEmpty())
+            iconCopy = Items.PLAYER_HEAD.getDefaultStack();
+
+        this.icon = iconCopy;
     }
 
     public static class AccessSettings {
-        private boolean global; // Blanket flag, allows all players to access
+        private Visibility visibility; // Blanket flag, allows all players to access
         private boolean server; // Hides the actual owner and makes it unbreakable
         private String team; // Scoreboard team
+        private ArrayList<UUID> trustedPlayers; // Players that can access this waystone on private visibility
 
         public static final Codec<AccessSettings> CODEC = RecordCodecBuilder.create(instance -> instance
-                .group(Codec.BOOL.fieldOf("global").forGetter(AccessSettings::isGlobal),
+                .group(Codec.STRING.fieldOf("visibility").forGetter(AccessSettings::getVisibilityAsString),
                         Codec.BOOL.fieldOf("server").forGetter(AccessSettings::isServerOwned),
-                        Codec.STRING.fieldOf("team").forGetter(AccessSettings::getTeam))
+                        Codec.STRING.fieldOf("team").forGetter(AccessSettings::getTeam),
+                        Codec.list(Uuids.CODEC).fieldOf("trused_players").forGetter(AccessSettings::getTrustedPlayers))
                 .apply(instance, AccessSettings::new));
 
-        public AccessSettings(boolean global, boolean server, String team) {
-            this.global = global;
+        public AccessSettings(String visibility, boolean server, String team, List<UUID> trustedPlayers) {
+            this.visibility = Enum.valueOf(Visibility.class, visibility);
             this.server = server;
             this.team = team;
+            this.trustedPlayers = new ArrayList<>(trustedPlayers);
+        }
+
+        public AccessSettings(Visibility visibility, boolean server, String team, List<UUID> trustedPlayers) {
+            this.visibility = visibility;
+            this.server = server;
+            this.team = team;
+            this.trustedPlayers = new ArrayList<>(trustedPlayers);
         }
 
         public boolean canPlayerAccess(WaystoneRecord parent, ServerPlayerEntity player) {
+            if(this.visibility == Visibility.PRIVATE && parent.owner.equals(player.getUuid()))
+                return true;
+            else if(this.visibility == Visibility.PRIVATE && this.trustedPlayers.contains(player.getUuid()))
+                return true;
+            else if(this.visibility == Visibility.PRIVATE)
+                return false;
+
             PlayerData data = WaystoneStorage.getPlayerState(player);
             if (data.discoveredWaystones.contains(parent.getHash()))
                 return true;
 
-            if (this.isGlobal())
+            if(this.visibility == Visibility.PUBLIC)
                 return true;
-            if (this.isServerOwned())
+            if(this.isServerOwned())
                 return true;
+
             Team team = player.getScoreboardTeam();
             if (team != null && team.getName().equals(this.team))
                 return true;
@@ -280,12 +330,29 @@ public final class WaystoneRecord {
             return false;
         }
 
-        public boolean isGlobal() {
-            return global;
+        public String getVisibilityAsString() {
+            return visibility.toString();
         }
 
-        public void setGlobal(boolean global) {
-            this.global = global;
+        public Visibility getVisibility() {
+            return visibility;
+        }
+
+        public void setVisibility(Visibility visibility) {
+            this.visibility = visibility;
+        }
+
+        public List<UUID> getTrustedPlayers() {
+            return trustedPlayers;
+        }
+
+        public void addTrustedPlayer(UUID uuid) {
+            if(!trustedPlayers.contains(uuid))
+                trustedPlayers.add(uuid);
+        }
+
+        public void removeTrustedPlayer(UUID uuid) {
+            trustedPlayers.remove(uuid);
         }
 
         public boolean isServerOwned() {
@@ -323,5 +390,17 @@ public final class WaystoneRecord {
 
     public ServerWorld getWorld(MinecraftServer server) {
         return server.getWorld(this.getWorldKey());
+    }
+
+    private ItemStack createPlayerHead(ServerPlayerEntity player) {
+        ItemStack skull = new ItemStack(Items.PLAYER_HEAD);
+        skull.set(DataComponentTypes.PROFILE, new ProfileComponent(player.getGameProfile()));
+        return skull;
+    }
+
+    private ItemStack createPlayerHead(UUID playerUUID, String playerName) {
+        ItemStack skull = new ItemStack(Items.PLAYER_HEAD);
+        skull.set(DataComponentTypes.PROFILE, new ProfileComponent(new GameProfile(playerUUID, playerName)));
+        return skull;
     }
 }

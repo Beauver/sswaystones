@@ -4,13 +4,29 @@
 */
 package lol.sylvie.sswaystones.gui;
 
+import com.mojang.authlib.GameProfile;
 import eu.pb4.sgui.api.ClickType;
+import eu.pb4.sgui.api.elements.GuiElement;
 import eu.pb4.sgui.api.elements.GuiElementBuilder;
 import eu.pb4.sgui.api.gui.*;
+
+import java.io.BufferedReader;
+import java.net.HttpURLConnection;
+import java.net.URL;
+import java.util.ArrayList;
 import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+import java.util.concurrent.ScheduledExecutorService;
+import java.util.concurrent.ScheduledFuture;
+import java.util.concurrent.TimeUnit;
+
+import lol.sylvie.sswaystones.enums.Visibility;
 import lol.sylvie.sswaystones.storage.WaystoneRecord;
 import lol.sylvie.sswaystones.storage.WaystoneStorage;
 import me.lucko.fabric.api.permissions.v0.Permissions;
+import net.minecraft.component.DataComponentTypes;
+import net.minecraft.component.type.ProfileComponent;
 import net.minecraft.item.ItemStack;
 import net.minecraft.item.Items;
 import net.minecraft.scoreboard.Team;
@@ -20,6 +36,8 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import org.jetbrains.annotations.Nullable;
+
+import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 
 public class JavaViewerGui extends SimpleGui {
     private static final int ITEMS_PER_PAGE = 9 * 5;
@@ -65,10 +83,20 @@ public class JavaViewerGui extends SimpleGui {
             GuiElementBuilder element = new GuiElementBuilder(record.getIconOrHead(player.getServer()))
                     .setName(record.getWaystoneText().copy().formatted(Formatting.YELLOW));
 
-            if (!record.getAccessSettings().isServerOwned())
+            if(element.asStack().isEmpty() || element.asStack().isOf(Items.AIR)) {
+                element = new GuiElementBuilder(createPlayerHead(record.getOwnerUUID(), record.getOwnerName()))
+                        .setName(record.getWaystoneText().copy().formatted(Formatting.YELLOW));
+                record.setIcon(createPlayerHead(record.getOwnerUUID(), record.getOwnerName()));
+            }
+
+            element.setCount(1);
+            if (!record.getAccessSettings().isServerOwned()){
                 element.setLore(List.of(Text.of(record.getOwnerName())));
-            else
+            }
+            else{
                 element.glow(true);
+                element.setLore(List.of());
+            }
 
             element.setCallback((index, type, action, gui) -> {
                 record.handleTeleport(player);
@@ -187,6 +215,15 @@ public class JavaViewerGui extends SimpleGui {
                 this.setSlot(i, new GuiElementBuilder(Items.GRAY_STAINED_GLASS_PANE).setName(
                         Text.translatable("gui.sswaystones.change_icon_instruction").formatted(Formatting.GRAY)));
             }
+            this.setSlot(7, new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.CANCEL)
+                    .setName(Text.translatable("gui.sswaystones.reset").formatted(Formatting.RED))
+                    .setCallback((index, type, action, gui) -> {
+                        waystone.setIcon(createPlayerHead(player));
+                        this.close();
+                        ViewerUtil.openJavaGui(player, waystone);
+                    }));
+          
             this.setSlot(4, waystone.getIconOrHead(player.getServer()));
         }
 
@@ -198,7 +235,7 @@ public class JavaViewerGui extends SimpleGui {
                 ItemStack stack = player.getInventory().getStack(index);
 
                 if (stack != null && !stack.isOf(Items.AIR)) {
-                    waystone.setIcon(stack.getItem());
+                    waystone.setIcon(stack);
                     this.close();
                 }
             }
@@ -212,6 +249,7 @@ public class JavaViewerGui extends SimpleGui {
         }
     }
 
+    //TODO: Add Paging
     protected static class AccessSettingsGui extends SimpleGui {
         private final WaystoneRecord waystone;
 
@@ -241,13 +279,31 @@ public class JavaViewerGui extends SimpleGui {
             // Global
             if (Permissions.check(player, "sswaystones.create.global", true)) {
                 GuiElementBuilder globalToggle = new GuiElementBuilder(Items.PLAYER_HEAD)
-                        .setSkullOwner(IconConstants.GLOBE).setName(Text.translatable("gui.sswaystones.toggle_global")
-                                .formatted(accessSettings.isGlobal() ? Formatting.GREEN : Formatting.RED));
+                        .setSkullOwner(IconConstants.GLOBE)
+                        .setName(Text.translatable(accessSettings.getVisibility().getDisplayName()).formatted(accessSettings.getVisibility().getFormatting()));
 
                 globalToggle.setCallback((index, type, action, gui) -> {
-                    accessSettings.setGlobal(!accessSettings.isGlobal());
+                    accessSettings.setVisibility(
+                            Visibility.values()[
+                                    (accessSettings.getVisibility().ordinal() + 1) % Visibility.values().length
+                                    ]
+                    );
                     this.updateMenu();
                 });
+
+                int trustedPlayerSlot = 16;
+                if (accessSettings.getVisibility() == Visibility.PRIVATE) {
+                    GuiElementBuilder trustedPlayers = new GuiElementBuilder(Items.WRITABLE_BOOK)
+                            .setName(Text.translatable("gui.sswaystones.trusted_players").formatted(Formatting.GRAY));
+
+                    trustedPlayers.setCallback((index, type, action, gui) -> {
+                        TrustedPlayersGui trustedPlayerGui = new TrustedPlayersGui(waystone, player);
+                        trustedPlayerGui.open();
+                    });
+
+                    this.setSlot(trustedPlayerSlot, trustedPlayers);
+                }
+
                 this.setSlot(slot, globalToggle);
                 slot += 1;
             }
@@ -302,5 +358,454 @@ public class JavaViewerGui extends SimpleGui {
             super.onClose();
             ViewerUtil.openJavaGui(player, waystone);
         }
+    }
+
+    public static class AddTrustedPlayerGui extends SimpleGui {
+        private final WaystoneRecord waystone;
+        private final ArrayList<ServerPlayerEntity> onlinePlayers = new ArrayList<>(this.getPlayer().server.getPlayerManager().getPlayerList());
+        private int pageIndex = 0;
+
+        public AddTrustedPlayerGui(WaystoneRecord waystone, ServerPlayerEntity player) {
+            super(ScreenHandlerType.GENERIC_9X6, player, false);
+            this.waystone = waystone;
+
+            this.setTitle(Text.translatable("gui.sswaystones.add_trusted_player"));
+            updateMenu();
+        }
+
+
+        public void updateMenu() {
+            int totalPlayers = getPlayer().server.getPlayerManager().getPlayerList().size();
+            int playersPerPage = 45;
+            int maxPages = Math.max((int) Math.ceil((double) totalPlayers / playersPerPage), 1);
+            int offset = pageIndex * playersPerPage;
+            this.setTitle(Text.translatable("gui.sswaystones.add_trusted_player").append(String.format(" [%d/%d]", pageIndex + 1, maxPages)));
+
+            GuiElementBuilder previousPage = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.ARROW_LEFT)
+                    .setName(Text.translatable("gui.sswaystones.page_previous"))
+                    .setCallback((index2, type2, action2, gui2) -> {
+                        pageIndex--;
+                        if (pageIndex < 0) {
+                            pageIndex = (int) Math.ceil((double) onlinePlayers.size() / 45) - 1;
+                        }
+                        this.updateMenu();
+                    });
+
+            GuiElementBuilder nextPage = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.ARROW_RIGHT)
+                    .setName(Text.translatable("gui.sswaystones.page_next"))
+                    .setCallback((index2, type2, action2, gui2) -> {
+                        pageIndex++;
+                        if (pageIndex >= Math.ceil((double) onlinePlayers.size() / 45)) {
+                            pageIndex = 0;
+                        }
+                        this.updateMenu();
+                    });
+
+            GuiElementBuilder cancel = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.CANCEL)
+                    .setName(Text.translatable("gui.sswaystones.cancel").formatted(Formatting.RED))
+                    .setCallback((index2, type2, action2, gui2) -> {
+                        this.close();
+                        new TrustedPlayersGui(waystone, this.getPlayer()).open();
+                    });
+
+            for (int i = 0; i < 54; i++) {
+                if (i > 45) {
+                    this.setSlot(i, new GuiElementBuilder(Items.GRAY_STAINED_GLASS_PANE).setName(Text.literal("")));
+                }
+                if (i == 45) {
+                    this.setSlot(i, previousPage);
+                }
+                if (i == 47) {
+                    this.setSlot(i, nextPage);
+                }
+                if(i == 49){
+                    this.setSlot(i, cancel);
+                }
+            }
+
+            onlinePlayers.remove(player);
+            for (int i = offset; i < Math.min(offset + playersPerPage, onlinePlayers.size()); i++) {
+                ServerPlayerEntity player = onlinePlayers.get(i);
+                GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
+                        .setSkullOwner(player.getGameProfile(), this.getPlayer().server)
+                        .setName(Text.literal("Add " + player.getName().getString()).formatted(Formatting.GREEN));
+
+                playerItemBuilder.setCallback((index2, type2, action2, gui2) -> {
+                    waystone.getAccessSettings().addTrustedPlayer(player.getUuid());
+                    new TrustedPlayersGui(waystone, this.getPlayer()).open();
+                });
+
+                this.setSlot(i - offset, playerItemBuilder);
+            }
+        }
+
+        @Override
+        public void onClose() {
+            super.onClose();
+            new TrustedPlayersGui(waystone, player).open();
+        }
+    }
+
+    public static class AddTrustedOfflinePlayerGui extends AnvilInputGui {
+        private final WaystoneRecord waystone;
+        private ScheduledFuture<?> scheduledLookup = null;
+        private final ScheduledExecutorService scheduler = newSingleThreadScheduledExecutor();
+        private String lastLookupQuery = null;
+
+        public AddTrustedOfflinePlayerGui(WaystoneRecord waystone, ServerPlayerEntity player) {
+            super(player, false);
+            this.waystone = waystone;
+
+            this.setSlot(1, new GuiElementBuilder(Items.PLAYER_HEAD).setSkullOwner(IconConstants.CANCEL)
+                    .setName(Text.translatable("gui.back")).setCallback((index, type, action, gui) ->  new TrustedPlayersGui(waystone, player).open()));
+
+            updateDoneButton();
+
+            this.setTitle(Text.translatable("gui.sswaystones.add_trusted_offline_player"));
+        }
+
+        @Override
+        public void onInput(String input) {
+            super.onInput(input);
+            updateDoneButton();
+        }
+
+       private void updateDoneButton() {
+            String input = this.getInput();
+
+            GuiElementBuilder button = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setName(Text.translatable("gui.sswaystones.done").formatted(Formatting.GREEN))
+                    .setSkullOwner(IconConstants.CHECKMARK);
+
+            button.setCallback((index, type, action, gui) -> {
+                String playerName = this.getInput();
+                if (playerName.isEmpty()) {
+                    this.close();
+                    new TrustedPlayersGui(waystone, player).open();
+                    return;
+                }
+
+                lookupPlayerProfile(playerName, (profileOpt) -> {
+                    if (profileOpt.isPresent()) {
+                        waystone.getAccessSettings().addTrustedPlayer(profileOpt.get().getId());
+                    }
+                    this.close();
+                    new TrustedPlayersGui(waystone, player).open();
+                });
+            });
+            this.setSlot(2, button);
+
+           //TODO: look into this, for some reason for CookieDoughnut2 it doens't work and returns null or smthing
+            if (!input.isEmpty()) {
+                lookupPlayerProfile(input, (cachedProfile) -> {
+                    if (cachedProfile.isPresent()) {
+                        GuiElementBuilder updatedButton = new GuiElementBuilder(Items.PLAYER_HEAD)
+                                .setName(Text.translatable("gui.sswaystones.done").formatted(Formatting.GREEN))
+                                .setSkullOwner(cachedProfile.get(), player.server)
+                                .setCallback((index, type, action, gui) -> {
+                                    waystone.getAccessSettings().addTrustedPlayer(cachedProfile.get().getId());
+                                    this.close();
+                                    new TrustedPlayersGui(waystone, player).open();
+                                });
+                        this.setSlot(2, updatedButton);
+                    }
+                });
+            }
+        }
+
+        private void lookupPlayerProfile(String playerName, java.util.function.Consumer<Optional<GameProfile>> callback) {
+            if (playerName == null || playerName.isEmpty()) {
+                player.server.execute(() -> callback.accept(Optional.empty()));
+                return;
+            }
+            if (scheduledLookup != null && !scheduledLookup.isDone()) {
+                scheduledLookup.cancel(false);
+            }
+
+            final String currentQuery = playerName;
+            if (currentQuery.equals(lastLookupQuery)) {
+                return;
+            }
+
+            scheduledLookup = scheduler.schedule(() -> {
+                lastLookupQuery = currentQuery;
+
+                Optional<GameProfile> profile = Optional.empty();
+                try {
+                    String apiUrl = "https://api.mojang.com/users/profiles/minecraft/" + currentQuery;
+                    URL url = new URL(apiUrl);
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("GET");
+
+                    if (connection.getResponseCode() == 200) {
+                        BufferedReader reader = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(connection.getInputStream()));
+                        StringBuilder response = new StringBuilder();
+                        String line;
+
+                        while ((line = reader.readLine()) != null) {
+                            response.append(line);
+                        }
+                        reader.close();
+
+                        String json = response.toString();
+                        String id = extractJsonValue(json, "id");
+                        String name = extractJsonValue(json, "name");
+
+                        if (id != null && name != null) {
+                            UUID uuid = convertDashlessUUID(id);
+                            profile = Optional.of(new GameProfile(uuid, name));
+                        }
+                    }
+                    connection.disconnect();
+                } catch (Exception e) {}
+
+                final Optional<GameProfile> finalProfile = profile;
+                player.server.execute(() -> callback.accept(finalProfile));
+            }, 150, TimeUnit.MILLISECONDS);
+        }
+
+        private UUID convertDashlessUUID(String id) {
+            return UUID.fromString(id.replaceFirst(
+                    "(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)",
+                    "$1-$2-$3-$4-$5"
+            ));
+        }
+
+        private String extractJsonValue(String json, String key) {
+            String keyPattern = "\"" + key + "\"\\s*:\\s*\"([^\"]+)\"";
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(keyPattern);
+            java.util.regex.Matcher matcher = pattern.matcher(json);
+
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return null;
+        }
+
+        @Override
+        public void onClose() {
+            super.onClose();
+            new TrustedPlayersGui(waystone, player).open();
+        }
+    }
+
+    public static class TrustedPlayersGui extends SimpleGui {
+        private final WaystoneRecord waystone;
+        private int pageIndex = 0;
+
+        public TrustedPlayersGui(WaystoneRecord waystone, ServerPlayerEntity player) {
+            super(ScreenHandlerType.GENERIC_9X6, player, false);
+            this.waystone = waystone;
+            this.updateMenu();
+        }
+
+        private void updateMenu() {
+            for(int i = 0; i < 54; i++) {
+                this.clearSlot(i);
+            }
+
+            int totalTrustedPlayers = waystone.getAccessSettings().getTrustedPlayers().size();
+            int playersPerPage = 45;
+            int maxPages = Math.max((int) Math.ceil((double) totalTrustedPlayers / playersPerPage), 1);
+            int offset = pageIndex * playersPerPage;
+            this.setTitle(Text.translatable("gui.sswaystones.trusted_players").append(String.format(" [%d/%d]", pageIndex + 1, maxPages)));
+
+            for (int i = 0; i < 54; i++) {
+                if (i > 44) {
+                    this.setSlot(i, new GuiElementBuilder(Items.GRAY_STAINED_GLASS_PANE).setName(Text.literal("")));
+                }
+                if (i == 45) {
+                    this.setSlot(i, new GuiElementBuilder(Items.PLAYER_HEAD)
+                            .setSkullOwner(IconConstants.ARROW_LEFT)
+                            .setName(Text.translatable("gui.sswaystones.page_previous"))
+                            .setCallback((index, type, action, gui) -> {
+                                if (totalTrustedPlayers > 0) {
+                                    pageIndex--;
+                                    if (pageIndex < 0) {
+                                        pageIndex = maxPages - 1;
+                                    }
+                                    this.updateMenu();
+                                }
+                            }));
+                }
+                if (i == 47) {
+                    this.setSlot(i, new GuiElementBuilder(Items.PLAYER_HEAD)
+                            .setSkullOwner(IconConstants.ARROW_RIGHT)
+                            .setName(Text.translatable("gui.sswaystones.page_next"))
+                            .setCallback((index, type, action, gui) -> {
+                                pageIndex++;
+                                if (pageIndex >= maxPages) {
+                                    pageIndex = 0;
+                                }
+                                this.updateMenu();
+                            }));
+                }
+            }
+
+            List<UUID> trustedPlayers = waystone.getAccessSettings().getTrustedPlayers();
+            for (int i = offset; i < Math.min(offset + playersPerPage, trustedPlayers.size()); i++) {
+                UUID playerUuid = trustedPlayers.get(i);
+                GameProfile profile = this.getPlayer().server.getUserCache().getByUuid(playerUuid).orElse(null);
+
+                if(profile == null) {
+                    int finalI = i;
+                    GuiElementBuilder loadingItem = new GuiElementBuilder(Items.PLAYER_HEAD)
+                            .setName(Text.literal("Loading player data...").formatted(Formatting.GRAY));
+                    this.setSlot(finalI - offset, loadingItem);
+
+                    lookupPlayerProfile(playerUuid.toString(), (optionalProfile) -> {
+                        if (optionalProfile.isPresent()) {
+                            GameProfile newProfile = optionalProfile.get();
+                            String playerName = newProfile.getName();
+                            GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
+                                    .setSkullOwner(newProfile, this.getPlayer().server)
+                                    .setName(Text.literal("Remove " + playerName).formatted(Formatting.RED));
+
+                            playerItemBuilder.setCallback((index, type, action, gui) -> {
+                                waystone.getAccessSettings().removeTrustedPlayer(playerUuid);
+                                this.updateMenu();
+                            });
+                            // Check if this slot is still valid before updating
+                            if (isOpen() && finalI - offset < 45) {
+                                this.setSlot(finalI - offset, playerItemBuilder);
+                            }
+                        }
+                    });
+                }else{
+                    String playerName = profile != null ? profile.getName() : playerUuid.toString();
+                    GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
+                            .setSkullOwner(profile != null ? profile : new GameProfile(playerUuid, null), this.getPlayer().server)
+                            .setName(Text.literal("Remove " + playerName).formatted(Formatting.RED));
+
+                    playerItemBuilder.setCallback((index, type, action, gui) -> {
+                        waystone.getAccessSettings().removeTrustedPlayer(playerUuid);
+                        this.updateMenu();
+                    });
+                    this.setSlot(i - offset, playerItemBuilder);
+                }
+            }
+
+            GuiElementBuilder cancel = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.CANCEL)
+                    .setName(Text.translatable("gui.sswaystones.back").formatted(Formatting.RED))
+                    .setCallback((index, type, action, gui) -> {
+                        this.close();
+                        ViewerUtil.openJavaGui(this.getPlayer(), waystone);
+                    });
+
+            GuiElementBuilder addTrustedPlayerItem = new GuiElementBuilder(Items.PLAYER_HEAD)
+                    .setSkullOwner(IconConstants.PLUS)
+                    .setName(Text.translatable("gui.sswaystones.add_trusted_player").formatted(Formatting.GREEN));
+
+            addTrustedPlayerItem.setCallback((index, type, action, gui) -> {
+                AddTrustedPlayerGui addTrustedPlayerGui = new AddTrustedPlayerGui(waystone, this.getPlayer());
+                addTrustedPlayerGui.open();
+            });
+
+            GuiElementBuilder addTrustedOfflinePlayer = new GuiElementBuilder(Items.NAME_TAG)
+                    .setItemName(Text.translatable("gui.sswaystones.add_trusted_offline_player").formatted(Formatting.GREEN));
+
+            addTrustedOfflinePlayer.setCallback((index, type, action, gui) -> {
+                AddTrustedOfflinePlayerGui addTrustedOfflinePlayerGui = new AddTrustedOfflinePlayerGui(waystone, this.getPlayer());
+                addTrustedOfflinePlayerGui.open();
+            });
+
+            this.setSlot(50, addTrustedOfflinePlayer);
+            this.setSlot(49, addTrustedPlayerItem);
+            this.setSlot(53, cancel);
+        }
+
+       private void lookupPlayerProfile(String uuidOrName, java.util.function.Consumer<Optional<GameProfile>> callback) {
+           final ScheduledExecutorService scheduler = newSingleThreadScheduledExecutor();
+
+            if (uuidOrName == null || uuidOrName.isEmpty()) {
+                player.server.execute(() -> callback.accept(Optional.empty()));
+                return;
+            }
+
+           scheduler.schedule(() -> {
+                Optional<GameProfile> profile = Optional.empty();
+                try {
+                    String apiUrl;
+                    boolean isUUID = uuidOrName.length() > 16;
+
+                    if (isUUID) {
+                        String uuidWithoutDashes = uuidOrName.replace("-", "");
+                        apiUrl = "https://sessionserver.mojang.com/session/minecraft/profile/" + uuidWithoutDashes;
+                    } else {
+                        apiUrl = "https://api.mojang.com/users/profiles/minecraft/" + uuidOrName;
+                    }
+
+                    URL url = new URL(apiUrl);
+                    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
+                    connection.setRequestMethod("GET");
+
+                    if (connection.getResponseCode() == 200) {
+                        BufferedReader reader = new java.io.BufferedReader(
+                                new java.io.InputStreamReader(connection.getInputStream()));
+                        StringBuilder response = new StringBuilder();
+                        String line;
+
+                        while ((line = reader.readLine()) != null) {
+                            response.append(line);
+                        }
+                        reader.close();
+
+                        String json = response.toString();
+                        String id = extractJsonValue(json, "id");
+                        String name = extractJsonValue(json, "name");
+
+                        if (id != null && name != null) {
+                            UUID uuid = convertDashlessUUID(id);
+                            profile = Optional.of(new GameProfile(uuid, name));
+                        }
+                    }
+                    connection.disconnect();
+                } catch (Exception e) {}
+
+                final Optional<GameProfile> finalProfile = profile;
+                player.server.execute(() -> callback.accept(finalProfile));
+            }, 0, TimeUnit.MILLISECONDS);
+        }
+
+        private UUID convertDashlessUUID(String id) {
+            return UUID.fromString(id.replaceFirst(
+                    "(\\p{XDigit}{8})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}{4})(\\p{XDigit}+)",
+                    "$1-$2-$3-$4-$5"
+            ));
+        }
+
+        private String extractJsonValue(String json, String key) {
+            String keyPattern = "\"" + key + "\"\\s*:\\s*\"([^\"]+)\"";
+            java.util.regex.Pattern pattern = java.util.regex.Pattern.compile(keyPattern);
+            java.util.regex.Matcher matcher = pattern.matcher(json);
+
+            if (matcher.find()) {
+                return matcher.group(1);
+            }
+            return null;
+        }
+
+        @Override
+        public void onClose() {
+            super.onClose();
+            new AccessSettingsGui(waystone, player).open();
+        }
+    }
+
+    private static ItemStack createPlayerHead(ServerPlayerEntity player) {
+        ItemStack skull = new ItemStack(Items.PLAYER_HEAD);
+        skull.set(DataComponentTypes.PROFILE, new ProfileComponent(player.getGameProfile()));
+        return skull;
+    }
+
+    private static ItemStack createPlayerHead(UUID playerUUID, String playerName) {
+        ItemStack skull = new ItemStack(Items.PLAYER_HEAD);
+        skull.set(DataComponentTypes.PROFILE, new ProfileComponent(new GameProfile(playerUUID, playerName)));
+        return skull;
     }
 }
