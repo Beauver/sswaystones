@@ -24,7 +24,7 @@ import java.util.concurrent.TimeUnit;
 import lol.sylvie.sswaystones.enums.Visibility;
 import lol.sylvie.sswaystones.storage.WaystoneRecord;
 import lol.sylvie.sswaystones.storage.WaystoneStorage;
-import me.lucko.fabric.api.permissions.v0.Permissions;
+import me.lucko.fabric.api.permissions.v0.*;
 import net.minecraft.component.DataComponentTypes;
 import net.minecraft.component.type.ProfileComponent;
 import net.minecraft.item.ItemStack;
@@ -36,6 +36,7 @@ import net.minecraft.server.network.ServerPlayerEntity;
 import net.minecraft.text.Text;
 import net.minecraft.util.Formatting;
 import org.jetbrains.annotations.Nullable;
+
 
 import static java.util.concurrent.Executors.newSingleThreadScheduledExecutor;
 
@@ -89,7 +90,6 @@ public class JavaViewerGui extends SimpleGui {
                 record.setIcon(createPlayerHead(record.getOwnerUUID(), record.getOwnerName()));
             }
 
-            element.setCount(1);
             if (!record.getAccessSettings().isServerOwned()){
                 element.setLore(List.of(Text.of(record.getOwnerName())));
             }
@@ -362,7 +362,7 @@ public class JavaViewerGui extends SimpleGui {
 
     public static class AddTrustedPlayerGui extends SimpleGui {
         private final WaystoneRecord waystone;
-        private final ArrayList<ServerPlayerEntity> onlinePlayers = new ArrayList<>(this.getPlayer().server.getPlayerManager().getPlayerList());
+        private final ArrayList<ServerPlayerEntity> onlinePlayers = new ArrayList<>(this.getPlayer().getServer().getPlayerManager().getPlayerList());
         private int pageIndex = 0;
 
         public AddTrustedPlayerGui(WaystoneRecord waystone, ServerPlayerEntity player) {
@@ -375,7 +375,7 @@ public class JavaViewerGui extends SimpleGui {
 
 
         public void updateMenu() {
-            int totalPlayers = getPlayer().server.getPlayerManager().getPlayerList().size();
+            int totalPlayers = getPlayer().getServer().getPlayerManager().getPlayerList().size();
             int playersPerPage = 45;
             int maxPages = Math.max((int) Math.ceil((double) totalPlayers / playersPerPage), 1);
             int offset = pageIndex * playersPerPage;
@@ -430,7 +430,7 @@ public class JavaViewerGui extends SimpleGui {
             for (int i = offset; i < Math.min(offset + playersPerPage, onlinePlayers.size()); i++) {
                 ServerPlayerEntity player = onlinePlayers.get(i);
                 GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
-                        .setSkullOwner(player.getGameProfile(), this.getPlayer().server)
+                        .setSkullOwner(player.getGameProfile(), this.getPlayer().getServer())
                         .setName(Text.literal("Add " + player.getName().getString()).formatted(Formatting.GREEN));
 
                 playerItemBuilder.setCallback((index2, type2, action2, gui2) -> {
@@ -504,7 +504,7 @@ public class JavaViewerGui extends SimpleGui {
                     if (cachedProfile.isPresent()) {
                         GuiElementBuilder updatedButton = new GuiElementBuilder(Items.PLAYER_HEAD)
                                 .setName(Text.translatable("gui.sswaystones.done").formatted(Formatting.GREEN))
-                                .setSkullOwner(cachedProfile.get(), player.server)
+                                .setSkullOwner(cachedProfile.get(), player.getServer())
                                 .setCallback((index, type, action, gui) -> {
                                     waystone.getAccessSettings().addTrustedPlayer(cachedProfile.get().getId());
                                     this.close();
@@ -518,7 +518,7 @@ public class JavaViewerGui extends SimpleGui {
 
         private void lookupPlayerProfile(String playerName, java.util.function.Consumer<Optional<GameProfile>> callback) {
             if (playerName == null || playerName.isEmpty()) {
-                player.server.execute(() -> callback.accept(Optional.empty()));
+                player.getServer().execute(() -> callback.accept(Optional.empty()));
                 return;
             }
             if (scheduledLookup != null && !scheduledLookup.isDone()) {
@@ -564,7 +564,7 @@ public class JavaViewerGui extends SimpleGui {
                 } catch (Exception e) {}
 
                 final Optional<GameProfile> finalProfile = profile;
-                player.server.execute(() -> callback.accept(finalProfile));
+                player.getServer().execute(() -> callback.accept(finalProfile));
             }, 150, TimeUnit.MILLISECONDS);
         }
 
@@ -649,7 +649,7 @@ public class JavaViewerGui extends SimpleGui {
             List<UUID> trustedPlayers = waystone.getAccessSettings().getTrustedPlayers();
             for (int i = offset; i < Math.min(offset + playersPerPage, trustedPlayers.size()); i++) {
                 UUID playerUuid = trustedPlayers.get(i);
-                GameProfile profile = this.getPlayer().server.getUserCache().getByUuid(playerUuid).orElse(null);
+                GameProfile profile = this.getPlayer().getServer().getUserCache().getByUuid(playerUuid).orElse(null);
 
                 if(profile == null) {
                     int finalI = i;
@@ -662,7 +662,7 @@ public class JavaViewerGui extends SimpleGui {
                             GameProfile newProfile = optionalProfile.get();
                             String playerName = newProfile.getName();
                             GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
-                                    .setSkullOwner(newProfile, this.getPlayer().server)
+                                    .setSkullOwner(newProfile, this.getPlayer().getServer())
                                     .setName(Text.literal("Remove " + playerName).formatted(Formatting.RED));
 
                             playerItemBuilder.setCallback((index, type, action, gui) -> {
@@ -678,7 +678,7 @@ public class JavaViewerGui extends SimpleGui {
                 }else{
                     String playerName = profile != null ? profile.getName() : playerUuid.toString();
                     GuiElementBuilder playerItemBuilder = new GuiElementBuilder(Items.PLAYER_HEAD)
-                            .setSkullOwner(profile != null ? profile : new GameProfile(playerUuid, null), this.getPlayer().server)
+                            .setSkullOwner(profile != null ? profile : new GameProfile(playerUuid, null), this.getPlayer().getServer())
                             .setName(Text.literal("Remove " + playerName).formatted(Formatting.RED));
 
                     playerItemBuilder.setCallback((index, type, action, gui) -> {
@@ -723,7 +723,7 @@ public class JavaViewerGui extends SimpleGui {
            final ScheduledExecutorService scheduler = newSingleThreadScheduledExecutor();
 
             if (uuidOrName == null || uuidOrName.isEmpty()) {
-                player.server.execute(() -> callback.accept(Optional.empty()));
+                player.getServer().execute(() -> callback.accept(Optional.empty()));
                 return;
             }
 
@@ -768,7 +768,7 @@ public class JavaViewerGui extends SimpleGui {
                 } catch (Exception e) {}
 
                 final Optional<GameProfile> finalProfile = profile;
-                player.server.execute(() -> callback.accept(finalProfile));
+                player.getServer().execute(() -> callback.accept(finalProfile));
             }, 0, TimeUnit.MILLISECONDS);
         }
 

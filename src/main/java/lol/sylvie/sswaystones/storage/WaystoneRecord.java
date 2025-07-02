@@ -200,9 +200,7 @@ public final class WaystoneRecord {
         if(icon == null || icon.isEmpty() || icon.getItem() == Items.AIR) {
             return createPlayerHead(this.getOwnerUUID(), this.getOwnerName());
         }
-
-        if(icon.getCount() <= 0 || icon.getCount() > 99)
-            icon.setCount(1);
+        icon.setCount(1);
 
         if (icon != Items.PLAYER_HEAD.getDefaultStack())
             return icon;
@@ -256,8 +254,7 @@ public final class WaystoneRecord {
     }
 
     public ItemStack getIcon() {
-        if(icon.getCount() <= 0 || icon.getCount() > 99)
-            icon.setCount(1);
+        icon.setCount(1);
 
         return icon;
     }
@@ -270,8 +267,7 @@ public final class WaystoneRecord {
         }
 
         ItemStack iconCopy = icon.copy();
-        if (iconCopy.getCount() <= 0 || iconCopy.getCount() > 99)
-            iconCopy.setCount(1);
+        iconCopy.setCount(1);
 
         if (iconCopy.getItem() == Items.AIR || iconCopy.isEmpty())
             iconCopy = Items.PLAYER_HEAD.getDefaultStack();

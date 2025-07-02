@@ -22,7 +22,7 @@ import lol.sylvie.sswaystones.config.Configuration;
 import lol.sylvie.sswaystones.config.Description;
 import lol.sylvie.sswaystones.storage.WaystoneRecord;
 import lol.sylvie.sswaystones.storage.WaystoneStorage;
-import me.lucko.fabric.api.permissions.v0.Permissions;
+import me.lucko.fabric.api.permissions.v0.*;
 import net.minecraft.server.MinecraftServer;
 import net.minecraft.server.command.ServerCommandSource;
 import net.minecraft.server.world.ServerWorld;

@@ -1,6 +1,6 @@
 /*
-  This file is licensed under the MIT License!
-  https://github.com/sylvxa/sswaystones/blob/main/LICENSE
+ This file is licensed under the MIT License!
+ https://github.com/sylvxa/sswaystones/blob/main/LICENSE
 */
 package lol.sylvie.sswaystones.mixin;
 
@@ -32,7 +32,7 @@ public class PlayerEntityMixin {
 
     @Inject(method = "damage", at = @At("TAIL"))
     public void updateCombatTimer(ServerWorld world, DamageSource source, float amount,
-            CallbackInfoReturnable<Boolean> cir) {
+                                  CallbackInfoReturnable<Boolean> cir) {
         PlayerEntity thisPlayer = (PlayerEntity) (Object) this;
         if (thisPlayer.equals(source.getAttacker()) || !isCombat(source))
             return;
